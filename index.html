@@ -586,6 +586,26 @@ body.dark-mode .auth-screen{background:linear-gradient(135deg,#061a16 0%,#115e59
 .role-readonly #section-clientes input,
 .role-readonly #section-calibres input{pointer-events:none;opacity:.7;}
 </style>
+
+<style id="jsonbin-diagnostic-css">
+#jsonbinDiagPanel{position:fixed;right:18px;bottom:18px;z-index:99999;width:min(430px,calc(100vw - 36px));background:#fff;color:#0f172a;border:1px solid #cbd5e1;border-radius:16px;box-shadow:0 18px 55px rgba(0,0,0,.22);padding:16px;font:13px system-ui,sans-serif;display:none}
+#jsonbinDiagPanel.open{display:block}
+#jsonbinDiagPanel h3{margin:0 0 10px;font-size:16px}
+#jsonbinDiagPanel .diag-status{padding:10px;border-radius:10px;background:#f1f5f9;margin:8px 0;white-space:pre-wrap}
+#jsonbinDiagPanel .diag-row{display:flex;justify-content:space-between;gap:10px;padding:7px 0;border-bottom:1px solid #e2e8f0}
+#jsonbinDiagPanel .diag-ok{color:#047857;font-weight:800}
+#jsonbinDiagPanel .diag-bad{color:#b91c1c;font-weight:800}
+#jsonbinDiagPanel .diag-warn{color:#b45309;font-weight:800}
+#jsonbinDiagPanel button{padding:9px 12px;border:0;border-radius:9px;cursor:pointer;font-weight:800}
+#jsonbinDiagPanel .diag-actions{display:flex;gap:8px;margin-top:10px}
+body.dark-mode #jsonbinDiagPanel{background:#111827;color:#f8fafc;border-color:#334155}
+body.dark-mode #jsonbinDiagPanel .diag-status{background:#172033}
+body.dark-mode #jsonbinDiagPanel .diag-row{border-color:#334155}
+</style>
+
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
 </head>
 <body>
 
@@ -649,6 +669,7 @@ body.dark-mode .auth-screen{background:linear-gradient(135deg,#061a16 0%,#115e59
     </nav>
     <div class="sidebar-footer">
       <div id="sidebarSyncBadge" style="margin-bottom:8px; line-height:1.4;">Cargando…</div>
+<button class="btn no-print" type="button" onclick="openFirebaseMigration()" style="margin-top:8px;width:100%;justify-content:center;">☁️ Migrar JSONBin → Firebase</button>
       <button class="btn btn-sm" style="width:100%; justify-content:center;" onclick="syncNowManual()">🔄 Sincronizar ahora</button>
     </div>
   </aside>
@@ -989,456 +1010,220 @@ function buildDefaultData(){
 }
 
 /* =========================================================================
-   ALMACENAMIENTO: nube (sincronizado entre dispositivos) + caché local
-   Si el entorno no soporta almacenamiento en la nube (por ejemplo, al abrir
-   este archivo suelto en un navegador fuera de Claude), la app sigue
-   funcionando normalmente pero guardando solo en este dispositivo.
-   ========================================================================= */
-/* =========================================================================
-   ALMACENAMIENTO: JSONBin.io + caché local
+   FIREBASE: almacenamiento y sincronización en tiempo real
    -------------------------------------------------------------------------
-   IMPORTANTE:
-   1) Cree un BIN en JSONBin.io.
-   2) Cree un Access Key con permisos Bins: Read + Update.
-   3) Pegue aquí el BIN ID y el Access Key.
-   4) NO use la Master Key en este HTML.
-
-   JSONBin API v3:
-   GET  https://api.jsonbin.io/v3/b/<BIN_ID>/latest
-   PUT  https://api.jsonbin.io/v3/b/<BIN_ID>
+   Firestore guarda cada colección por separado para respetar las reglas:
+   clientes, calibres, pedidos y configuracion/app.
+   JSONBin se mantiene únicamente como migración manual de una sola vez.
    ========================================================================= */
-
-/* =========================================================================
-   JSONBIN.IO — CONFIGURACIÓN
-   1) Crea un Bin vacío con un JSON válido.
-   2) Pega aquí el BIN ID y tu Access Key.
-   3) No uses la Master Key en este HTML.
-   ========================================================================= */
-const JSONBIN_CONFIG = {
-  enabled: true,
-  binId: '6a7e3688f5f4af5e2913200c',
-  accessKey: '$2a$10$Chb5gZXpVeE/LMskW7y3o.o3lbELCRXvutRWp7DYl3gLzhAQ3QfQ6',
-  versioning: true
+const FIREBASE_CONFIG = {
+  apiKey: "AIzaSyDx996CFkfBLKwhCM0qw5SKyV_Jzdk0Kt0",
+  authDomain: "pedidos-flux-natural.firebaseapp.com",
+  projectId: "pedidos-flux-natural",
+  storageBucket: "pedidos-flux-natural.firebasestorage.app",
+  messagingSenderId: "738694699695",
+  appId: "1:738694699695:web:c0db8b60ccb0143f15d25a"
 };
 
-const JSONBIN_BASE = 'https://api.jsonbin.io/v3/b';
-
-function jsonBinConfigured(){
-  return JSONBIN_CONFIG.enabled &&
-         JSONBIN_CONFIG.binId &&
-         JSONBIN_CONFIG.binId !== 'PEGA_AQUI_TU_BIN_ID' &&
-         JSONBIN_CONFIG.accessKey &&
-         JSONBIN_CONFIG.accessKey !== 'PEGA_AQUI_TU_ACCESS_KEY';
-}
-
-async function jsonBinRequest(url, options={}, timeoutMs=10000){
-  if(typeof fetch !== 'function'){
-    throw new Error('Este navegador no permite conexiones web desde este archivo.');
-  }
-
-  const controller = typeof AbortController !== 'undefined'
-    ? new AbortController()
-    : null;
-
-  const timer = controller
-    ? setTimeout(() => controller.abort(), timeoutMs)
-    : null;
-
-  try{
-    const requestOptions = Object.assign({}, options);
-    if(controller) requestOptions.signal = controller.signal;
-    requestOptions.cache = 'no-store';
-
-    const res = await fetch(url, requestOptions);
-    const raw = await res.text();
-
-    let payload = null;
-    try { payload = raw ? JSON.parse(raw) : null; } catch(e) {}
-
-    if(!res.ok){
-      const message =
-        (payload && (payload.message || payload.error)) ||
-        raw ||
-        `HTTP ${res.status}`;
-      throw new Error(`JSONBin ${res.status}: ${message}`);
-    }
-
-    return payload;
-  }catch(e){
-    if(e && e.name === 'AbortError'){
-      throw new Error('JSONBin tardó demasiado en responder.');
-    }
-    if(e && e.name === 'TypeError'){
-      throw new Error(
-        'No fue posible conectar con JSONBin. Si estás abriendo el HTML directamente desde Archivos/iPhone, publícalo primero mediante HTTPS.'
-      );
-    }
-    throw e;
-  }finally{
-    if(timer) clearTimeout(timer);
-  }
-}
-
-async function jsonBinLoad(){
-  if(!jsonBinConfigured()) return null;
-
-  return (await jsonBinRequest(
-    `${JSONBIN_BASE}/${encodeURIComponent(JSONBIN_CONFIG.binId)}/latest`,
-    {
-      method: 'GET',
-      headers: {
-        'X-Access-Key': JSONBIN_CONFIG.accessKey,
-        'Accept': 'application/json'
-      }
-    }
-  )).record || null;
-}
-
-async function jsonBinSave(data){
-  if(!jsonBinConfigured()) return false;
-
-  await jsonBinRequest(
-    `${JSONBIN_BASE}/${encodeURIComponent(JSONBIN_CONFIG.binId)}`,
-    {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Access-Key': JSONBIN_CONFIG.accessKey,
-        'Accept': 'application/json'
-      },
-      body: JSON.stringify(data)
-    }
-  );
-
-  return true;
-}
+if(!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+const FB_AUTH = firebase.auth();
+const FB_DB = firebase.firestore();
+const FIREBASE_APP_DOC = FB_DB.collection('configuracion').doc('app');
 
 const STORAGE_KEY = 'pinaOroMiel_v1';
-
 let DATA = null;
 let cloudActive = false;
 let cloudSyncing = false;
 let cloudLastError = null;
 let cloudRequestInProgress = false;
+let firebaseUnsubs = [];
+let firebaseReady = false;
 
-
-function hasCloud(){
-  return jsonBinConfigured();
-}
-
-async function cloudLoad(){
-  if(!hasCloud()) return null;
-  try{
-    return await jsonBinLoad();
-  }catch(e){
-    console.error('JSONBin LOAD:', e);
-    cloudLastError = e.message || 'No se pudo conectar con JSONBin';
-    return null;
-  }
-}
-
-async function cloudSave(data){
-  if(!hasCloud()) return false;
-  try{
-    return await jsonBinSave(data);
-  }catch(e){
-    console.error('JSONBin SAVE:', e);
-    cloudLastError = e.message || 'No se pudo guardar en JSONBin';
-    return false;
-  }
-}
-
-function normalizeData(d){
-  if(!d || typeof d !== 'object') return null;
-
-  if(!Array.isArray(d.clientes)) d.clientes = [];
-  if(!Array.isArray(d.calibres)) d.calibres = [];
-  if(!Array.isArray(d.pedidos)) d.pedidos = [];
-  if(!d.precios || typeof d.precios !== 'object') d.precios = {};
-  if(!d.precioGeneral || typeof d.precioGeneral !== 'object') d.precioGeneral = {};
-
-  // Migración de versiones anteriores: si no existe precio general,
-  // toma el primer precio disponible de cada calibre como recomendación.
-  d.calibres.forEach(cal => {
-    if(d.precioGeneral[cal.id] === undefined || d.precioGeneral[cal.id] === null || d.precioGeneral[cal.id] === ''){
-      for(const cliId of Object.keys(d.precios)){
-        const legacy = d.precios[cliId] && d.precios[cliId][cal.id];
-        if(legacy !== undefined && legacy !== null && legacy !== '' && !isNaN(Number(legacy))){
-          d.precioGeneral[cal.id] = Number(legacy);
-          break;
-        }
-      }
-    }
-  });
-
-  d.pedidos.forEach(p => {
-    if(!p.grupoId) p.grupoId = p.id;
-    p.kg = Math.round(Number(p.kg)||0);
-    p.total = p.kg * (Number(p.precioUsado)||0);
-  });
-
-  if(!d.produccion) d.produccion = {};
-  if(!d.lastModified) d.lastModified = 0;
-
-  return d;
-}
+function hasCloud(){ return firebaseReady && !!FB_AUTH.currentUser; }
 
 function readLocalCache(){
   try{
     const raw = localStorage.getItem(STORAGE_KEY);
-
     if(raw){
       const parsed = JSON.parse(raw);
-
-      if(parsed && parsed.clientes && parsed.calibres && parsed.pedidos){
-        return normalizeData(parsed);
-      }
+      if(parsed && parsed.clientes && parsed.calibres && parsed.pedidos) return normalizeData(parsed);
     }
-
-  }catch(e){
-    console.warn('No se pudo leer la caché local.', e);
-  }
-
+  }catch(e){ console.warn('No se pudo leer la caché local.', e); }
   return null;
 }
 
 function saveDataRaw(d){
-  try{
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
-  }catch(e){
-    toast('No se pudo guardar en este dispositivo (localStorage).', 'err');
-  }
+  try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(d)); }
+  catch(e){ toast('No se pudo guardar en este dispositivo (localStorage).', 'err'); }
 }
 
-function isLocalFile(){
-  return window.location && window.location.protocol === 'file:';
-}
-
+function isLocalFile(){ return window.location && window.location.protocol === 'file:'; }
 function showEnvironmentWarning(){
-  if(isLocalFile()){
-    setTimeout(() => {
-      toast(
-        'Este HTML está abierto como archivo local. Para sincronizar JSONBin en iPhone, publícalo en una dirección HTTPS.',
-        'err'
-      );
-    }, 600);
+  if(isLocalFile()) setTimeout(()=>toast('Firebase Authentication requiere publicar esta app mediante HTTPS (por ejemplo, GitHub Pages).','err'),600);
+}
+
+async function firebaseLoad(){
+  if(!hasCloud()) return null;
+  const [clientesSnap, calibresSnap, pedidosSnap, appSnap] = await Promise.all([
+    FB_DB.collection('clientes').get(),
+    FB_DB.collection('calibres').get(),
+    FB_DB.collection('pedidos').get(),
+    FIREBASE_APP_DOC.get()
+  ]);
+  const clientes = clientesSnap.docs.map(d=>d.data());
+  const calibres = calibresSnap.docs.map(d=>d.data());
+  const pedidos = pedidosSnap.docs.map(d=>d.data());
+  const cfg = appSnap.exists ? (appSnap.data()||{}) : {};
+  return normalizeData({
+    clientes, calibres, pedidos,
+    precioGeneral: cfg.precioGeneral || {},
+    precios: {},
+    produccion: cfg.produccion || {},
+    lastModified: Number(cfg.lastModified)||0
+  });
+}
+
+async function firebaseSave(data){
+  if(!hasCloud()) return false;
+  // Firestore limita los writes por batch; trabajamos en bloques seguros.
+  const writeOps=[];
+  const addSet=(ref,obj)=>writeOps.push({type:'set',ref,obj});
+  data.clientes.forEach(c=>addSet(FB_DB.collection('clientes').doc(c.id),c));
+  data.calibres.forEach(c=>addSet(FB_DB.collection('calibres').doc(c.id),c));
+  data.pedidos.forEach(p=>addSet(FB_DB.collection('pedidos').doc(p.id),p));
+  addSet(FIREBASE_APP_DOC,{
+    precioGeneral:data.precioGeneral||{},
+    produccion:data.produccion||{},
+    lastModified:data.lastModified||Date.now(),
+    updatedBy:FB_AUTH.currentUser?FB_AUTH.currentUser.uid:null,
+    updatedAt:firebase.firestore.FieldValue.serverTimestamp()
+  });
+
+  // Elimina documentos que ya no existen en DATA para mantener la nube fiel al estado local.
+  const [oldClientes,oldCalibres,oldPedidos]=await Promise.all([
+    FB_DB.collection('clientes').get(),FB_DB.collection('calibres').get(),FB_DB.collection('pedidos').get()
+  ]);
+  const idsCli=new Set(data.clientes.map(x=>x.id));
+  const idsCal=new Set(data.calibres.map(x=>x.id));
+  const idsPed=new Set(data.pedidos.map(x=>x.id));
+  oldClientes.docs.forEach(d=>{if(!idsCli.has(d.id))writeOps.push({type:'delete',ref:d.ref});});
+  oldCalibres.docs.forEach(d=>{if(!idsCal.has(d.id))writeOps.push({type:'delete',ref:d.ref});});
+  oldPedidos.docs.forEach(d=>{if(!idsPed.has(d.id))writeOps.push({type:'delete',ref:d.ref});});
+
+  for(let i=0;i<writeOps.length;i+=450){
+    const batch=FB_DB.batch();
+    writeOps.slice(i,i+450).forEach(op=>op.type==='delete'?batch.delete(op.ref):batch.set(op.ref,op.obj));
+    await batch.commit();
   }
+  return true;
+}
+
+function clearFirebaseListeners(){ firebaseUnsubs.forEach(fn=>{try{fn()}catch(e){}}); firebaseUnsubs=[]; }
+
+function startFirebaseRealtime(){
+  clearFirebaseListeners();
+  if(!hasCloud()) return;
+  // Los cambios externos de pedidos/clientes/calibres/configuración se reflejan en DATA.
+  let ready = {clientes:false,calibres:false,pedidos:false,app:false};
+  const maybeRender=()=>{
+    if(Object.values(ready).every(Boolean)){
+      saveDataRaw(DATA); updateSyncBadge(); renderAll();
+    }
+  };
+  firebaseUnsubs.push(FB_DB.collection('clientes').onSnapshot(s=>{
+    DATA.clientes=s.docs.map(d=>d.data()); ready.clientes=true; maybeRender();
+  },e=>{cloudLastError=e.message;updateSyncBadge();}));
+  firebaseUnsubs.push(FB_DB.collection('calibres').onSnapshot(s=>{
+    DATA.calibres=s.docs.map(d=>d.data()); ready.calibres=true; maybeRender();
+  },e=>{cloudLastError=e.message;updateSyncBadge();}));
+  firebaseUnsubs.push(FB_DB.collection('pedidos').onSnapshot(s=>{
+    DATA.pedidos=s.docs.map(d=>d.data()); ready.pedidos=true; maybeRender();
+  },e=>{cloudLastError=e.message;updateSyncBadge();}));
+  firebaseUnsubs.push(FIREBASE_APP_DOC.onSnapshot(s=>{
+    const d=s.exists?s.data():{}; DATA.precioGeneral=d.precioGeneral||{}; DATA.produccion=d.produccion||{}; DATA.lastModified=Number(d.lastModified)||DATA.lastModified||0; ready.app=true; maybeRender();
+  },e=>{cloudLastError=e.message;updateSyncBadge();}));
 }
 
 async function initData(){
-  const localData = readLocalCache();
-
-  // Un archivo abierto directamente desde iPhone/Archivos no debe
-  // intentar autenticarse contra JSONBin durante el arranque.
-  // La aplicación abre con datos locales y mostrará que debe publicarse por HTTPS.
-  if(isLocalFile()){
-    cloudActive = false;
-    DATA = localData || buildDefaultData();
-    saveDataRaw(DATA);
-    updateSyncBadge();
-    return;
-  }
-
-  // Sin configuración de JSONBin: funciona completamente en local.
-  if(!hasCloud()){
-    cloudActive = false;
-    DATA = localData || buildDefaultData();
-    saveDataRaw(DATA);
-    updateSyncBadge();
-    return;
-  }
-
-  cloudActive = true;
-  updateSyncBadge();
-
-  const cloudData = await cloudLoad();
-
-  if(cloudData && cloudData.clientes){
-    // Si existe una copia local más reciente, la subimos.
-    if(localData && (localData.lastModified||0) > (cloudData.lastModified||0)){
-      DATA = normalizeData(localData);
-      await cloudSave(DATA);
+  const localData=readLocalCache();
+  cloudActive=true; updateSyncBadge();
+  try{
+    const cloudData=await firebaseLoad();
+    if(cloudData && cloudData.clientes){
+      DATA=cloudData;
+    }else if(localData){
+      DATA=normalizeData(localData);
+      await firebaseSave(DATA);
     }else{
-      DATA = normalizeData(cloudData);
+      DATA=buildDefaultData();
+      await firebaseSave(DATA);
     }
-
-  }else if(localData){
-    // Primer uso del Bin: subir la información local existente.
-    DATA = normalizeData(localData);
-    await cloudSave(DATA);
-
-  }else{
-    // Bin vacío y sin datos locales: crear datos demo.
-    DATA = buildDefaultData();
-    await cloudSave(DATA);
+    firebaseReady=true;
+    saveDataRaw(DATA);
+    startFirebaseRealtime();
+  }catch(e){
+    console.error('Firebase LOAD:',e);
+    cloudLastError=e.message||'No se pudo conectar con Firebase';
+    DATA=normalizeData(localData||buildDefaultData());
+    saveDataRaw(DATA);
   }
-
-  saveDataRaw(DATA);
   updateSyncBadge();
 }
 
 function saveData(){
-  DATA.lastModified = Date.now();
-
-  // Siempre mantiene una copia local de respaldo.
-  saveDataRaw(DATA);
-  updateSyncBadge();
-
-  if(cloudActive){
-    cloudSyncing = true;
-    cloudLastError = null;
-    updateSyncBadge();
-
-    cloudSave(DATA).then(ok => {
-      cloudSyncing = false;
-      cloudLastError = ok ? null : (cloudLastError || 'error');
-      updateSyncBadge();
-
-      if(!ok){
-        toast(
-          'No se pudo sincronizar con JSONBin. El pedido quedó guardado en este dispositivo.',
-          'err'
-        );
-      }
+  DATA.lastModified=Date.now();
+  saveDataRaw(DATA); updateSyncBadge();
+  if(cloudActive && hasCloud()){
+    cloudSyncing=true; cloudLastError=null; updateSyncBadge();
+    firebaseSave(DATA).then(ok=>{
+      cloudSyncing=false; cloudLastError=ok?null:(cloudLastError||'error'); updateSyncBadge();
+      if(!ok) toast('No se pudo sincronizar con Firebase. El cambio quedó guardado localmente.','err');
+    }).catch(e=>{
+      cloudSyncing=false; cloudLastError=e.message||'Error de Firebase'; updateSyncBadge();
+      toast('Error al guardar en Firebase: '+(e.message||'revisa permisos.'),'err');
     });
   }
 }
 
 function updateSyncBadge(){
-  const el = document.getElementById('sidebarSyncBadge');
-  if(!el) return;
-
-  if(isLocalFile()){
-    el.innerHTML =
-      `📱 Archivo local<br>` +
-      `<span style="opacity:.7;">Publícalo en HTTPS para activar JSONBin.</span>`;
-
-  }else if(!jsonBinConfigured()){
-    el.innerHTML =
-      `🖥️ JSONBin no configurado<br>` +
-      `<span style="opacity:.7;">Agrega BIN ID y Access Key en JSONBIN_CONFIG.</span>`;
-
-  }else if(cloudSyncing){
-    el.innerHTML = `🔄 Sincronizando con JSONBin…`;
-
-  }else if(cloudLastError){
-    el.innerHTML =
-      `⚠️ Error de sincronización<br>` +
-      `<span style="opacity:.7;">Se conserva una copia local.</span>`;
-
-  }else{
-    el.innerHTML =
-      `🟢 Sincronizado con JSONBin<br>` +
-      `<span style="opacity:.7;">Los datos pueden compartirse entre dispositivos.</span>`;
-  }
-}
-
-async function testJSONBinConnection(){
-  if(isLocalFile()){
-    toast('Primero publica este HTML mediante HTTPS.', 'err');
-    return false;
-  }
-  try{
-    const data = await jsonBinLoad();
-    if(data){
-      toast('Conexión con JSONBin: OK', 'ok');
-      return true;
-    }
-    toast('JSONBin respondió, pero el Bin no contiene un registro válido.', 'err');
-    return false;
-  }catch(e){
-    console.error('TEST JSONBIN:', e);
-    toast(e.message || 'No se pudo conectar con JSONBin.', 'err');
-    return false;
-  }
+  const el=document.getElementById('sidebarSyncBadge'); if(!el)return;
+  if(!FB_AUTH.currentUser){ el.innerHTML='🔐 Firebase: sin sesión'; }
+  else if(cloudSyncing){ el.innerHTML='🔄 Sincronizando con Firebase…'; }
+  else if(cloudLastError){ el.innerHTML='⚠️ Error de Firebase<br><span style="opacity:.7;">Se conserva una copia local.</span>'; }
+  else { el.innerHTML='🟢 Firebase sincronizado<br><span style="opacity:.7;">Actualización entre dispositivos activa.</span>'; }
 }
 
 async function syncNowManual(){
-  if(isLocalFile()){
-    toast('Este archivo está abierto localmente. Publícalo mediante HTTPS para sincronizar.', 'err');
-    return;
-  }
-
-  if(!hasCloud()){
-    toast(
-      'JSONBin no está configurado. Revisa BIN ID y Access Key.',
-      'err'
-    );
-    return;
-  }
-
-  cloudSyncing = true;
-  updateSyncBadge();
-
-  const cloudData = await cloudLoad();
-  cloudSyncing = false;
-
-  if(cloudData && cloudData.clientes &&
-     (cloudData.lastModified||0) > (DATA.lastModified||0)){
-
-    DATA = normalizeData(cloudData);
-    saveDataRaw(DATA);
-    renderAll();
-
-    toast('Datos actualizados desde JSONBin.', 'ok');
-
-  }else{
-    const ok = await cloudSave(DATA);
-
-    if(ok){
-      toast('Los datos locales quedaron sincronizados con JSONBin.', 'ok');
-    }else{
-      toast('No fue posible sincronizar con JSONBin.', 'err');
-    }
-  }
-
-  updateSyncBadge();
+  if(!hasCloud()){toast('No hay una sesión de Firebase activa.','err');return;}
+  cloudSyncing=true;updateSyncBadge();
+  try{
+    const cloudData=await firebaseLoad();
+    if(cloudData && (cloudData.lastModified||0)>(DATA.lastModified||0)){
+      DATA=cloudData;saveDataRaw(DATA);renderAll();toast('Datos actualizados desde Firebase.','ok');
+    }else{await firebaseSave(DATA);toast('Datos locales sincronizados con Firebase.','ok');}
+    cloudLastError=null;
+  }catch(e){cloudLastError=e.message||'Error';toast('No fue posible sincronizar con Firebase.','err');}
+  cloudSyncing=false;updateSyncBadge();
 }
 
 function startCloudPolling(){
-  if(!hasCloud()) return;
+  // Firestore usa listeners en tiempo real; mantenemos una comprobación al volver a la pestaña.
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden && hasCloud()) syncNowManual(); });
+}
 
-  setInterval(async ()=>{
-    if(document.hidden) return;
-    if(cloudRequestInProgress) return;
-
-    const modal = document.getElementById('confirmModal');
-    if(modal && modal.classList.contains('show')) return;
-
-    const activeSection = document.querySelector('.section.active');
-
-    // No reemplazar datos mientras el usuario está creando/editando un pedido.
-    if(activeSection && activeSection.id === 'section-nuevo-pedido') return;
-
-    const cloudData = await cloudLoad();
-
-    if(cloudData && cloudData.clientes &&
-       (cloudData.lastModified||0) > (DATA.lastModified||0)){
-
-      DATA = normalizeData(cloudData);
-      saveDataRaw(DATA);
-      renderAll();
-
-      toast('Datos actualizados desde otro dispositivo.', 'ok');
-      updateSyncBadge();
-    }
-
-  }, 20000);
-
-  document.addEventListener('visibilitychange', async ()=>{
-    if(document.hidden || cloudRequestInProgress) return;
-
-    const cloudData = await cloudLoad();
-
-    if(cloudData && cloudData.clientes &&
-       (cloudData.lastModified||0) > (DATA.lastModified||0)){
-
-      DATA = normalizeData(cloudData);
-      saveDataRaw(DATA);
-      renderAll();
-      updateSyncBadge();
-    }
-  });
+async function migrateJSONBinToFirebase(binId,accessKey){
+  if(!isAdmin()){toast('Solo el administrador puede migrar datos desde JSONBin.','err');return;}
+  if(!binId||!accessKey){toast('Indica BIN ID y Access Key para la migración.','err');return;}
+  try{
+    const res=await fetch('https://api.jsonbin.io/v3/b/'+encodeURIComponent(binId)+'/latest',{headers:{'X-Access-Key':accessKey,'Accept':'application/json'},cache:'no-store'});
+    const payload=await res.json();
+    if(!res.ok) throw new Error(payload.message||payload.error||('HTTP '+res.status));
+    const migrated=normalizeData(payload.record||payload);
+    if(!migrated || !migrated.clientes) throw new Error('El Bin no contiene una estructura de datos válida.');
+    DATA=migrated; DATA.lastModified=Date.now();
+    await firebaseSave(DATA); saveDataRaw(DATA); renderAll(); startFirebaseRealtime();
+    toast('Migración JSONBin → Firebase completada.','ok');
+  }catch(e){console.error(e);toast('Migración fallida: '+(e.message||e),'err');}
 }
 
 /* ---------- Helpers de formato ---------- */
@@ -2688,157 +2473,90 @@ function initTheme(){
 
 
 /* =========================================================================
-   USUARIOS Y ROLES
-   =========================================================================
-   Primera fase: control de acceso de interfaz.
-   IMPORTANTE: las credenciales están en el HTML, por lo que esto NO debe
-   considerarse autenticación empresarial de alta seguridad. Para seguridad
-   real habrá que mover autenticación a un backend.
-*/
+   USUARIOS Y ROLES — Firebase Authentication
+   ========================================================================= */
 const APP_USERS = {
-  admin: {
-    username:'admin',
-    password:'2001',
-    name:'Administrador',
-    role:'admin',
-    roleLabel:'Administrador',
-    permissions:'all'
-  },
-  luis: {
-    username:'luis',
-    password:'2026',
-    name:'Luis',
-    role:'jefe',
-    roleLabel:'Consulta gerencial',
-    permissions:['dashboard','pedidos','produccion','reportes']
-  },
-  lorena: {
-    username:'lorena',
-    password:'1234',
-    name:'Lorena',
-    role:'cobradora',
-    roleLabel:'Despachos y cobro',
-    permissions:['dashboard','pedidos','pesaje','reportes']
-  }
+  admin:{username:'admin',email:'admin@pedidosfluxnatural.com',name:'Administrador',role:'admin',roleLabel:'Administrador',permissions:'all'},
+  luis:{username:'luis',email:'luis@pedidosfluxnatural.com',name:'Luis',role:'jefe',roleLabel:'Consulta gerencial',permissions:['dashboard','pedidos','produccion','reportes']},
+  lorena:{username:'lorena',email:'lorena@pedidosfluxnatural.com',name:'Lorena',role:'cobradora',roleLabel:'Despachos y precios',permissions:['dashboard','pedidos','pesaje','precios','reportes']}
 };
-
-let CURRENT_USER = null;
-
-function getCurrentUser(){
-  return CURRENT_USER;
-}
-function hasPermission(section){
-  if(!CURRENT_USER) return false;
-  if(CURRENT_USER.permissions === 'all') return true;
-  return CURRENT_USER.permissions.includes(section);
-}
-function isAdmin(){
-  return CURRENT_USER && CURRENT_USER.role === 'admin';
-}
+let CURRENT_USER=null;
+function getCurrentUser(){return CURRENT_USER;}
+function hasPermission(section){if(!CURRENT_USER)return false;if(CURRENT_USER.permissions==='all')return true;return CURRENT_USER.permissions.includes(section);}
+function isAdmin(){return CURRENT_USER&&CURRENT_USER.role==='admin';}
 function applyRoleUI(){
-  document.body.classList.remove('role-admin','role-jefe','role-cobradora','role-readonly');
-  if(!CURRENT_USER) return;
-
-  document.body.classList.add('role-'+CURRENT_USER.role);
-  if(!isAdmin()) document.body.classList.add('role-readonly');
-
-  document.querySelectorAll('.menu-item').forEach(item=>{
-    const allowed=hasPermission(item.dataset.section);
-    item.style.display=allowed?'':'none';
-  });
-
-  const chipName=document.getElementById('currentUserName');
-  const chipRole=document.getElementById('currentUserRole');
-  if(chipName) chipName.textContent=CURRENT_USER.name;
-  if(chipRole) chipRole.textContent=CURRENT_USER.roleLabel;
-
-  // El administrador ve todo; los demás no deben entrar a mantenimiento.
+  document.body.classList.remove('role-admin','role-jefe','role-cobradora','role-readonly'); if(!CURRENT_USER)return;
+  document.body.classList.add('role-'+CURRENT_USER.role); if(!isAdmin())document.body.classList.add('role-readonly');
+  document.querySelectorAll('.menu-item').forEach(item=>{item.style.display=hasPermission(item.dataset.section)?'':'none';});
+  const chipName=document.getElementById('currentUserName'),chipRole=document.getElementById('currentUserRole');
+  if(chipName)chipName.textContent=CURRENT_USER.name;if(chipRole)chipRole.textContent=CURRENT_USER.roleLabel;
   const protectedSections=['nuevo-pedido','ajuste-produccion','precios','clientes','calibres'];
-  protectedSections.forEach(sec=>{
-    const el=document.getElementById('section-'+sec);
-    if(el && !hasPermission(sec)) el.style.display='none';
-  });
+  protectedSections.forEach(sec=>{const el=document.getElementById('section-'+sec);if(el&&!hasPermission(sec))el.style.display='none';});
 }
-function loginUser(){
+async function loginUser(){
   const user=(document.getElementById('authUser').value||'').trim().toLowerCase();
   const pass=document.getElementById('authPass').value||'';
   const found=APP_USERS[user];
-
-  if(!found || found.password!==pass){
-    document.getElementById('authError').textContent='Usuario o contraseña incorrectos.';
-    return;
-  }
-
-  CURRENT_USER=found;
-  try{ sessionStorage.setItem('pinaOroMiel_user', found.username); }catch(e){}
-  document.getElementById('authScreen').style.display='none';
-  document.body.classList.remove('auth-locked');
-  applyRoleUI();
-  initAppAfterLogin();
+  if(!found){document.getElementById('authError').textContent='Usuario o contraseña incorrectos.';return;}
+  try{
+    document.getElementById('authError').textContent='Conectando con Firebase…';
+    const cred=await FB_AUTH.signInWithEmailAndPassword(found.email,pass);
+    const roleSnap=await FB_DB.collection('usuarios').doc(cred.user.uid).get();
+    if(!roleSnap.exists)throw new Error('El usuario no tiene un perfil de rol en Firestore.');
+    const profile=roleSnap.data()||{};
+    CURRENT_USER={...found,uid:cred.user.uid,role:profile.rol||found.role,name:profile.nombre||found.name};
+    firebaseReady=true;cloudActive=true;cloudLastError=null;
+    document.getElementById('authScreen').style.display='none';document.body.classList.remove('auth-locked');
+    applyRoleUI();initAppAfterLogin();
+  }catch(e){console.error('AUTH:',e);document.getElementById('authError').textContent='No se pudo iniciar sesión: '+(e.message||'verifica usuario y contraseña.');}
 }
-function logoutUser(){
-  try{ sessionStorage.removeItem('pinaOroMiel_user'); }catch(e){}
-  CURRENT_USER=null;
-  document.body.classList.add('auth-locked');
-  document.getElementById('authScreen').style.display='flex';
-  document.getElementById('authUser').value='';
-  document.getElementById('authPass').value='';
-  document.getElementById('authError').textContent='';
+async function logoutUser(){
+  clearFirebaseListeners();try{await FB_AUTH.signOut();}catch(e){} CURRENT_USER=null;firebaseReady=false;cloudActive=false;
+  document.body.classList.add('auth-locked');document.getElementById('authScreen').style.display='flex';
+  document.getElementById('authUser').value='';document.getElementById('authPass').value='';document.getElementById('authError').textContent='';updateSyncBadge();
 }
-function restoreSession(){
-  let saved='';
-  try{ saved=sessionStorage.getItem('pinaOroMiel_user')||''; }catch(e){}
-  if(saved && APP_USERS[saved]){
-    CURRENT_USER=APP_USERS[saved];
-    document.getElementById('authScreen').style.display='none';
-    document.body.classList.remove('auth-locked');
-    applyRoleUI();
-    initAppAfterLogin();
-  }else{
-    document.body.classList.add('auth-locked');
-    document.getElementById('authScreen').style.display='flex';
-    setTimeout(()=>document.getElementById('authUser')?.focus(),100);
-  }
-}
+FB_AUTH.onAuthStateChanged(async user=>{
+  if(user && !CURRENT_USER){
+    const key=Object.keys(APP_USERS).find(k=>APP_USERS[k].email===user.email);
+    if(key){
+      try{const s=await FB_DB.collection('usuarios').doc(user.uid).get();const p=s.data()||{};CURRENT_USER={...APP_USERS[key],uid:user.uid,role:p.rol||APP_USERS[key].role,name:p.nombre||APP_USERS[key].name};
+        document.getElementById('authScreen').style.display='none';document.body.classList.remove('auth-locked');applyRoleUI();initAppAfterLogin();
+      }catch(e){console.error(e);}
+    }
+  }else if(!user){CURRENT_USER=null;}
+});
 
 /* =========================================================================
    INIT
    ========================================================================= */
-function showJsonBinConfigHint(){
-  if(jsonBinConfigured()) return;
-  console.warn(
-    'JSONBin no está configurado. Edita JSONBIN_CONFIG con tu BIN ID y Access Key.'
-  );
-}
-
 async function initAppAfterLogin(){
-  initTheme();
-  showJsonBinConfigHint();
-  showEnvironmentWarning();
-
+  initTheme();showEnvironmentWarning();updateSyncBadge();
   try{
-    await Promise.race([
-      initData(),
-      new Promise((_, reject) =>
-        setTimeout(() => reject(new Error('La conexión inicial tardó demasiado.')), 12000)
-      )
-    ]);
-  }catch(e){
-    console.error('INIT:', e);
-    cloudLastError = e.message || 'Error al iniciar';
-    DATA = readLocalCache() || buildDefaultData();
-    saveDataRaw(DATA);
-    updateSyncBadge();
-  }
-
-  initGlobalDateFilter();
-  document.getElementById('pf_fecha').value = todayISO();
-  fillPedidoFormSelects();
-  goToSection('dashboard');
-  document.getElementById('loadOverlay').classList.add('hide');
-  startCloudPolling();
+    await Promise.race([initData(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('La conexión inicial tardó demasiado.')),15000))]);
+  }catch(e){console.error('INIT:',e);cloudLastError=e.message||'Error al iniciar';DATA=readLocalCache()||buildDefaultData();saveDataRaw(DATA);updateSyncBadge();}
+  initGlobalDateFilter();document.getElementById('pf_fecha').value=todayISO();fillPedidoFormSelects();goToSection('dashboard');document.getElementById('loadOverlay').classList.add('hide');startCloudPolling();
 }
-restoreSession();
+if(document.readyState==='loading'){} else { /* Firebase SDK ya cargado */ }
+</script>
+
+
+
+<div class="modal-backdrop" id="firebaseMigrationModal">
+  <div class="modal">
+    <div class="modal-header"><span>Migrar datos de JSONBin a Firebase</span><button class="btn btn-sm" onclick="closeFirebaseMigration()">✕</button></div>
+    <div class="modal-body">
+      <p>Esta herramienta copia el contenido actual de JSONBin a Firestore. No elimina nada de JSONBin.</p>
+      <div class="field"><label>BIN ID</label><input id="migBinId" value="6a7e3688f5f4af5e2913200c"></div>
+      <div class="field" style="margin-top:10px;"><label>Access Key de JSONBin</label><input id="migAccessKey" type="password" placeholder="Pega aquí tu Access Key"></div>
+      <div class="pill-note" style="margin-top:12px;">La Access Key se usa solo para esta migración y no se guarda en Firebase ni en el HTML.</div>
+    </div>
+    <div class="modal-footer"><button class="btn" onclick="closeFirebaseMigration()">Cancelar</button><button class="btn btn-primary" onclick="runFirebaseMigration()">Migrar ahora</button></div>
+  </div>
+</div>
+<script>
+function openFirebaseMigration(){if(!isAdmin()){toast('Solo admin puede migrar datos.','err');return;}document.getElementById('firebaseMigrationModal').classList.add('show');}
+function closeFirebaseMigration(){document.getElementById('firebaseMigrationModal').classList.remove('show');}
+async function runFirebaseMigration(){const id=document.getElementById('migBinId').value.trim();const key=document.getElementById('migAccessKey').value.trim();await migrateJSONBinToFirebase(id,key);if(!cloudLastError)closeFirebaseMigration();}
 </script>
 </body>
 </html>
