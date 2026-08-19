@@ -606,6 +606,26 @@ body.dark-mode #jsonbinDiagPanel .diag-row{border-color:#334155}
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+
+<style id="firebaseDiagCss">
+#firebaseDiagPanel{position:fixed;right:18px;bottom:18px;z-index:100000;width:min(520px,calc(100vw - 36px));max-height:78vh;overflow:auto;background:#fff;color:#0f172a;border:1px solid #cbd5e1;border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.28);padding:16px;font:13px/1.35 system-ui,sans-serif;display:none}
+#firebaseDiagPanel.open{display:block}
+#firebaseDiagPanel h3{margin:0 0 8px;font-size:17px}
+#firebaseDiagPanel .fd-summary{padding:10px;border-radius:10px;background:#f1f5f9;margin:8px 0 12px;white-space:pre-wrap}
+#firebaseDiagPanel .fd-row{display:grid;grid-template-columns:150px 1fr;gap:8px;padding:8px 0;border-bottom:1px solid #e2e8f0}
+#firebaseDiagPanel .fd-ok{color:#047857;font-weight:800}
+#firebaseDiagPanel .fd-bad{color:#b91c1c;font-weight:800}
+#firebaseDiagPanel .fd-warn{color:#b45309;font-weight:800}
+#firebaseDiagPanel .fd-detail{font-size:11px;word-break:break-word;color:#475569}
+#firebaseDiagPanel button{padding:9px 12px;border:0;border-radius:9px;cursor:pointer;font-weight:800}
+#firebaseDiagPanel .fd-actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+#firebaseDiagPanel .fd-code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+body.dark-mode #firebaseDiagPanel{background:#111827;color:#f8fafc;border-color:#334155}
+body.dark-mode #firebaseDiagPanel .fd-summary{background:#172033}
+body.dark-mode #firebaseDiagPanel .fd-row{border-color:#334155}
+body.dark-mode #firebaseDiagPanel .fd-detail{color:#cbd5e1}
+</style>
+
 </head>
 <body>
 
@@ -668,7 +688,7 @@ body.dark-mode #jsonbinDiagPanel .diag-row{border-color:#334155}
       <div class="menu-item" data-section="reportes"><span class="menu-icon">▤</span>Reportes</div>
     </nav>
     <div class="sidebar-footer">
-      <div id="sidebarSyncBadge" style="margin-bottom:8px; line-height:1.4;">Cargando…</div>
+      <div id="sidebarSyncBadge" style="margin-bottom:8px; line-height:1.4;">Cargando…</div><button type="button" id="firebaseDiagButton" onclick="openFirebaseDiagnostic()" style="margin:8px 12px;width:calc(100% - 24px);padding:9px;border:1px solid rgba(255,255,255,.35);border-radius:9px;background:transparent;color:inherit;cursor:pointer;font-weight:800;">🔎 Diagnóstico Firebase</button>
 <button class="btn no-print" type="button" onclick="openFirebaseMigration()" style="margin-top:8px;width:100%;justify-content:center;">☁️ Migrar JSONBin → Firebase</button>
       <button class="btn btn-sm" style="width:100%; justify-content:center;" onclick="syncNowManual()">🔄 Sincronizar ahora</button>
     </div>
@@ -1163,7 +1183,7 @@ async function initData(){
     startFirebaseRealtime();
   }catch(e){
     console.error('Firebase LOAD:',e);
-    cloudLastError=e.message||'No se pudo conectar con Firebase';
+    cloudLastError=e.code?((e.code||'')+' — '+(e.message||'')):(e.message||'No se pudo conectar con Firebase');
     DATA=normalizeData(localData||buildDefaultData());
     saveDataRaw(DATA);
   }
@@ -1180,7 +1200,7 @@ function saveData(){
       if(!ok) toast('No se pudo sincronizar con Firebase. El cambio quedó guardado localmente.','err');
     }).catch(e=>{
       cloudSyncing=false; cloudLastError=e.message||'Error de Firebase'; updateSyncBadge();
-      toast('Error al guardar en Firebase: '+(e.message||'revisa permisos.'),'err');
+      toast('Error al guardar en Firebase: '+(e.code?e.code+' — ':'')+(e.message||'revisa permisos.'),'err');
     });
   }
 }
@@ -1202,7 +1222,11 @@ async function syncNowManual(){
       DATA=cloudData;saveDataRaw(DATA);renderAll();toast('Datos actualizados desde Firebase.','ok');
     }else{await firebaseSave(DATA);toast('Datos locales sincronizados con Firebase.','ok');}
     cloudLastError=null;
-  }catch(e){cloudLastError=e.message||'Error';toast('No fue posible sincronizar con Firebase.','err');}
+  }catch(e){
+    cloudLastError=e.code?((e.code||'')+' — '+(e.message||'')):(e.message||'Error');
+    toast('No fue posible sincronizar con Firebase: '+(e.message||'revisa el diagnóstico.'),'err');
+    setTimeout(()=>{ if(window.openFirebaseDiagnostic) window.openFirebaseDiagnostic(); },400);
+  }
   cloudSyncing=false;updateSyncBadge();
 }
 
@@ -2533,7 +2557,14 @@ async function initAppAfterLogin(){
   initTheme();showEnvironmentWarning();updateSyncBadge();
   try{
     await Promise.race([initData(),new Promise((_,reject)=>setTimeout(()=>reject(new Error('La conexión inicial tardó demasiado.')),15000))]);
-  }catch(e){console.error('INIT:',e);cloudLastError=e.message||'Error al iniciar';DATA=readLocalCache()||buildDefaultData();saveDataRaw(DATA);updateSyncBadge();}
+  }catch(e){
+    console.error('INIT:',e);
+    cloudLastError=e.code?((e.code||'')+' — '+(e.message||'')):(e.message||'Error al iniciar');
+    DATA=readLocalCache()||buildDefaultData();
+    saveDataRaw(DATA);
+    updateSyncBadge();
+    setTimeout(()=>{ if(window.openFirebaseDiagnostic) window.openFirebaseDiagnostic(); },700);
+  }
   initGlobalDateFilter();document.getElementById('pf_fecha').value=todayISO();fillPedidoFormSelects();goToSection('dashboard');document.getElementById('loadOverlay').classList.add('hide');startCloudPolling();
 }
 if(document.readyState==='loading'){} else { /* Firebase SDK ya cargado */ }
@@ -2558,5 +2589,107 @@ function openFirebaseMigration(){if(!isAdmin()){toast('Solo admin puede migrar d
 function closeFirebaseMigration(){document.getElementById('firebaseMigrationModal').classList.remove('show');}
 async function runFirebaseMigration(){const id=document.getElementById('migBinId').value.trim();const key=document.getElementById('migAccessKey').value.trim();await migrateJSONBinToFirebase(id,key);if(!cloudLastError)closeFirebaseMigration();}
 </script>
+
+<div id="firebaseDiagPanel" aria-live="polite">
+  <h3>🔎 Diagnóstico de Firebase</h3>
+  <div id="firebaseDiagSummary" class="fd-summary">Listo para comprobar Authentication y Firestore.</div>
+  <div id="firebaseDiagRows"></div>
+  <div class="fd-actions">
+    <button id="firebaseDiagRun">Probar de nuevo</button>
+    <button id="firebaseDiagCopy">Copiar diagnóstico</button>
+    <button id="firebaseDiagClose">Cerrar</button>
+  </div>
+  <div style="margin-top:8px;font-size:11px;opacity:.7">
+    Esta prueba solo lee datos. Para administrador también verifica escritura creando y eliminando inmediatamente un documento temporal de diagnóstico.
+  </div>
+</div>
+
+
+<script id="firebaseDiagJs">
+(function(){
+  function fdEl(id){return document.getElementById(id)}
+  function fdEsc(v){return String(v==null?'':v).replace(/[&<>"']/g,s=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]))}
+  const results=[];
+  function fdAdd(name,status,detail){
+    results.push({name,status,detail:detail||''});
+    const cls=status==='OK'?'fd-ok':(status==='FALLÓ'?'fd-bad':'fd-warn');
+    fdEl('firebaseDiagRows').insertAdjacentHTML('beforeend',
+      '<div class="fd-row"><div>'+fdEsc(name)+'</div><div><span class="'+cls+'">'+fdEsc(status)+'</span>'+
+      (detail?'<div class="fd-detail">'+fdEsc(detail)+'</div>':'')+'</div></div>');
+  }
+  function fdErr(e){
+    return (e&&((e.code?e.code+' — ':'')+(e.message||e.toString())))||'Error desconocido';
+  }
+  async function fdTest(){
+    results.length=0;
+    fdEl('firebaseDiagRows').innerHTML='';
+    fdEl('firebaseDiagSummary').textContent='Ejecutando pruebas…';
+    try{
+      const user=FB_AUTH.currentUser;
+      if(!user){fdAdd('Authentication','FALLÓ','No hay usuario autenticado en Firebase.');fdEl('firebaseDiagSummary').textContent='❌ No hay sesión de Firebase.';return;}
+      fdAdd('Authentication','OK',user.email+' | UID: '+user.uid);
+      if(typeof CURRENT_USER!=='undefined' && CURRENT_USER) fdAdd('Rol de aplicación','OK',CURRENT_USER.role+' | '+CURRENT_USER.name);
+      else fdAdd('Rol de aplicación','ADVERTENCIA','CURRENT_USER no está definido.');
+
+      const roleRef=FB_DB.collection('usuarios').doc(user.uid);
+      try{
+        const s=await roleRef.get();
+        if(s.exists) fdAdd('usuarios/'+user.uid,'OK','rol='+((s.data()||{}).rol||'sin rol'));
+        else fdAdd('usuarios/'+user.uid,'FALLÓ','El usuario está autenticado pero no existe su documento de rol.');
+      }catch(e){fdAdd('usuarios/'+user.uid,'FALLÓ',fdErr(e));}
+
+      const tests=[
+        ['clientes',()=>FB_DB.collection('clientes').get()],
+        ['calibres',()=>FB_DB.collection('calibres').get()],
+        ['pedidos',()=>FB_DB.collection('pedidos').get()],
+        ['configuracion/app',()=>FB_DB.collection('configuracion').doc('app').get()]
+      ];
+      for(const [name,fn] of tests){
+        try{
+          const s=await fn();
+          fdAdd(name,'OK',('Documentos: '+(s.size!=null?s.size:(s.exists?'1':'0'))));
+        }catch(e){fdAdd(name,'FALLÓ',fdErr(e));}
+      }
+
+      if(user && CURRENT_USER && CURRENT_USER.role==='admin'){
+        const ref=FB_DB.collection('configuracion').doc('__firebase_diagnostico_temporal__');
+        try{
+          await ref.set({diagnostico:true,uid:user.uid,at:firebase.firestore.FieldValue.serverTimestamp()});
+          fdAdd('Escritura Firestore','OK','Se creó el documento temporal correctamente.');
+          try{await ref.delete();fdAdd('Borrado de prueba','OK','Documento temporal eliminado.');}
+          catch(e){fdAdd('Borrado de prueba','FALLÓ',fdErr(e));}
+        }catch(e){fdAdd('Escritura Firestore','FALLÓ',fdErr(e));}
+      }else{
+        fdAdd('Escritura Firestore','ADVERTENCIA','Se omite la prueba de escritura porque el usuario no es admin.');
+      }
+
+      const bad=results.filter(x=>x.status==='FALLÓ');
+      if(bad.length){
+        fdEl('firebaseDiagSummary').textContent='❌ Hay '+bad.length+' prueba(s) fallida(s). El detalle indica exactamente qué colección o permiso está fallando.';
+      }else{
+        fdEl('firebaseDiagSummary').textContent='✅ Authentication y Firestore responden correctamente. Si la app aún muestra error, el problema está en la lógica de sincronización y no en la conexión.';
+      }
+    }catch(e){
+      fdEl('firebaseDiagSummary').textContent='❌ Error del diagnóstico: '+fdErr(e);
+    }
+  }
+  window.openFirebaseDiagnostic=function(){
+    fdEl('firebaseDiagPanel').classList.add('open');
+    fdTest();
+  };
+  window.runFirebaseDiagnostic=fdTest;
+  document.addEventListener('DOMContentLoaded',function(){
+    const close=fdEl('firebaseDiagClose'),run=fdEl('firebaseDiagRun'),copy=fdEl('firebaseDiagCopy');
+    if(close)close.onclick=()=>fdEl('firebaseDiagPanel').classList.remove('open');
+    if(run)run.onclick=fdTest;
+    if(copy)copy.onclick=async()=>{
+      const txt=results.map(r=>r.name+': '+r.status+(r.detail?' — '+r.detail:'')).join('\n');
+      try{await navigator.clipboard.writeText(txt);fdEl('firebaseDiagSummary').textContent='Diagnóstico copiado al portapapeles.';}
+      catch(e){fdEl('firebaseDiagSummary').textContent=txt;}
+    };
+  });
+})();
+</script>
+
 </body>
 </html>
